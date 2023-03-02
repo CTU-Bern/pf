@@ -2,22 +2,23 @@
 % Please edit documentation in R/projects_ctu_report.R
 \name{projects_ctu_report}
 \alias{projects_ctu_report}
-\title{function to get the projects in a specific year}
+\title{Function to get the booked hours for projects in total and in each year}
 \usage{
-projects_ctu_report(all_tabs, selected_year)
+projects_ctu_report(all_tabs)
 }
 \arguments{
 \item{all_tabs}{result from e.g. getPFData}
-
-\item{selected_year}{year for which projects should be summarized}
 }
 \value{
-projects_year
+projects
 }
 \description{
-This code has been adapted for the purpose of producing the graphs for the CTU Yearly report
+This code has been adapted for the purpose of producing the graphs for the QMR Yearly Report and CTU Annual Report. 
+The code gets (among others) customer info (top_CustomerName, CustomerName, CustomerName2, Organization), default project of customer,
+center info (mono/multi), ordinance info, archiving date of the project, runs prepTime to get total time bookings and time bookings for each year, 
+categorizes sum of time bookings (< 8h, 9-20h,...).
 }
 \examples{
 all_tabs <-  getPFData()
-x <- projects_ctu_report(all_tabs,selected_year)
+x <- projects_ctu_report(all_tabs)
 }

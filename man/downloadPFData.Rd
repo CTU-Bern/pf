@@ -4,7 +4,10 @@
 \alias{downloadPFData}
 \title{Download data from projectfacts via ODBC}
 \usage{
-downloadPFData(all = FALSE, ...)
+downloadPFData(
+  all = FALSE,
+  con = DBI::dbConnect(odbc::odbc(), "pf", catalog_name = "projectfacts")
+)
 }
 \arguments{
 \item{all}{logical - export all tables in the database (TRUE) or just the useful ones (FALSE)}

@@ -1,6 +1,6 @@
 Package: pf
 Title: ProjectFacts tools
-Version: 0.1.4
+Version: 0.1.5
 Authors@R: 
     c(
     person('Alan', 'Haynes', email = 'alan.haynes@ctu.unibe.ch', role = c('cre', 'aut')),
