@@ -31,7 +31,7 @@ decodeCustomFields <- function(dat, customfields, customfieldvalue){
     dplyr::select(PK_CUSTOMFIELD, NAME, AKTIV, AREA, name)
   
   # merge with customfieldvalue
-  new_cfs <- merge(x=customfieldvalue, y=tags, by.x="FK_CUSTOMFIELD", by.y="PK_CUSTOMFIELD")
+  new_cfs <- base::merge(x=as.data.frame(customfieldvalue), y=as.data.frame(tags), by.x="FK_CUSTOMFIELD", by.y="PK_CUSTOMFIELD")
  
   # to convert back to the format after combining and then pivoting, record which cf is which class
   nums <- which(!is.na(new_cfs$NUMBERVALUE))
