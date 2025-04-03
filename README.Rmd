@@ -48,10 +48,8 @@ all_tabs <- getPFData()
 # download data via ODBC
 all_tabs <- getPFData(NULL)
 
-all_tabs$customer <- decodeCustomFields(all_tabs$customer, all_tabs$customfields)
-all_tabs$project <- decodeCustomFields(all_tabs$project, all_tabs$customfields)
-all_tabs$ticket <- decodeCustomFields(all_tabs$ticket, all_tabs$customfields)
-all_tabs$worker <- decodeCustomFields(all_tabs$worker, all_tabs$customfields)
+all_tabs <- decodeAllCustomFields(all_tabs)
+
 # save the data to R
 savePFdata(all_tabs)
 ```

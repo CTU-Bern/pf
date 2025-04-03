@@ -1,10 +1,12 @@
 Package: pf
 Title: ProjectFacts tools
-Version: 0.1.13
+Version: 0.2.0
 Authors@R: 
     c(
     person('Alan', 'Haynes', email = 'alan.haynes@ctu.unibe.ch', role = c('cre', 'aut')),
-    person('Dominik', 'Güntensperger', email = 'dominik.guentensperger@ctu.unibe.ch', role = 'aut'))
+    person('Dominik', 'Güntensperger', email = 'dominik.guentensperger@ctu.unibe.ch', role = 'aut'),
+    person('Kimberly', 'Gilbert', email = 'kimberly.gilbert2@unibe.ch', role = 'aut')
+    )
 Description: Tools for working with ProjectFacts data and easy reporting of the data.
 License: MIT + file LICENSE
 Imports: 
