@@ -1,3 +1,11 @@
+# pf 0.2.2
+
+* update paths on r-folder structure
+
+# pf 0.2.1
+
+* adding a vignette for pf cleaning
+
 # pf 0.2.0
 
 * this is a breaking change; now decodeCustomFields() takes an additional parameter of 'customfieldvalue'

@@ -4,7 +4,10 @@
 \alias{getPFData}
 \title{Load projectfacts data either from file or ODBC}
 \usage{
-getPFData(file = "R:/Projectfacts/ODBC/pf_tabs.rds", ...)
+getPFData(
+  file = "R:/01_Operations/09_Project Management/Projectfacts/ODBC/pf_tabs.rds",
+  ...
+)
 }
 \arguments{
 \item{file}{filename to load or \code{NULL}. If \code{NULL}, data is loaded via ODBC.}
