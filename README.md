@@ -94,6 +94,8 @@ rmarkdown::render(input = "R:/Projectfacts/ODBC/pf_app/vignettes/quarterly.Rmd",
 
 ### Miscellaneous other things
 
+#### [`Vignette`](https://github.com/kjgilbert/pf_projfacts/blob/main/vignettes/pf_cleaning.Rmd) on cleaning pf data for quarterly reminders to fill in missing metadata fields in pf.
+
 #### Email addresses of project contacts
 
 ``` r

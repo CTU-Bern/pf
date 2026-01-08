@@ -1,0 +1,977 @@
+---
+title: "projectfacts Cleaning"
+author: "Kimberly Gilbert, DCR Data Manager"
+date: "17.07.2025"
+output: rmarkdown::html_vignette
+vignette: >
+  %\VignetteIndexEntry{projectfacts Cleaning}
+  %\VignetteEngine{knitr::rmarkdown}
+  %\VignetteEncoding{UTF-8}
+---
+
+```{r, include = FALSE}
+knitr::opts_chunk$set(
+  collapse = TRUE,
+  comment = "#>",
+  eval = FALSE  # <-- globally disables code evaluation to not send all the emails
+)
+```
+
+```{r setup}
+library(pf)
+```
+
+
+When all of the raw data is downloaded from the projectfacts back-end, it can be used for many purposes. 
+
+One check that is done in the DCR (Department of Clinical Research at the University of Bern) is to see where 
+we are missing data for important entries regarding metadata on tickets or projects or otherwise.
+
+The `pf` R package provides several useful functions to accomplish this.
+
+## Download Back-end Data
+
+The back-end data from pf is downloaded via ODBC
+
+```{r}
+
+library(tidyverse)
+
+Sys.setlocale(locale = "German_Switzerland.utf8")
+
+# download data via ODBC
+all_tabs <- pf::getPFData(NULL)
+
+```
+
+if "NULL" is removed, the function will instead load the saved and already existing .rds file of pf data
+
+
+##### Deal with encoding and formatting of the raw data
+
+```{r}
+
+# encoding
+all_tabs <- lapply(all_tabs, function(df) {
+  df <- lapply(df, function(col) {
+    if(is.character(col)) {
+      return(iconv(col, from = "UTF-8", to = "ISO-8859-1"))
+    } else {
+      return(col)
+    }
+  })
+  return(as.data.frame(df))
+})
+
+```
+
+##### Some users have unexplained encoding issues that are manually resolved:
+
+```{r}
+
+if (Sys.getenv("USERNAME") == "dg20s066" | Sys.getenv("USERNAME") == "kg24b362") {
+  
+  library(stringi)
+
+  custom_mapping <- list(
+    "\x80" = "Ç",
+    "\x81" = "ü",
+    "\x82" = "é",
+    "\x83" = "â",
+    "\x84" = "ä",
+    "\x85" = "à",
+    "\x86" = "æ",
+    "\x87" = "ç",
+    "\x88" = "ê",
+    "\x89" = "ë",
+    "\x90" = "É",
+    "\x91" = "í",
+    "\x93" = "ô",
+    "\x94" = "ö",
+    "\x96" = "ß",
+    "\x98" = "û",
+    "\x99" = "ù",
+    "\xa3" = "ú",
+    "\xa4" = "ñ",
+    "\xc6" = "ã",
+    "\xe1" = "ß",
+    "\xff" = " ",
+    "\xf0" = "",
+    "\x8a" = "è",
+    "\x8b" = "ï",
+    "\x8c" = "î",
+    "\x8e" = "ø",
+    "\x9a" = "å",
+    "\x9c" = "œ"
+  )
+   
+  # Function to apply custom mapping using stringi
+  apply_custom_mapping <- function(string, mapping) {
+    for (old_char in names(mapping)) {
+      new_char <- mapping[[old_char]]
+      string <- stri_replace_all_fixed(string, old_char, new_char, vectorize_all = FALSE)
+    }
+    return(string)
+  }
+  
+  all_tabs <- lapply(all_tabs, function(df) {
+    df <- lapply(df, function(col) {
+      if(is.character(col)) {
+        return(apply_custom_mapping(col,custom_mapping))
+      } else {
+        return(col)
+      }
+    })
+    return(as.data.frame(df))
+  })
+}
+
+```
+
+
+##### Add custom fields and save the data locally
+
+```{r}
+
+if(any(is.na(all_tabs$customfields$STOREKEY))) warning("Missing STOREKEYs found. They will be guessed based on the item ID")
+all_tabs$customfields <- all_tabs$customfields |> 
+  mutate(STOREKEY = case_when(is.na(STOREKEY) ~ paste0("92.",PK_CUSTOMFIELD),
+                              TRUE ~ STOREKEY))
+all_tabs <- pf::decodeAllCustomFields(all_tabs)
+
+# save the data from R to the .rds file
+pf::savePFdata(all_tabs)
+
+```
+
+
+## Load Back-end Data for Cleaning
+
+```{r}
+
+# load data ----
+
+all_tabs <- getPFData()
+
+project_folders <- dir("R:/Clinical studies")
+
+```
+
+#### Projects
+
+Create list of projects with all necessary info and time bookings in last 400 days. 
+Within this list we will also find all missing fields where we would like data to 
+be filled in.
+
+```{r warning=FALSE}
+
+# all projects with work packages
+projects <- all_tabs$project  |> 
+  
+  # get person in charge (only active workers)
+  # info is coded in field FK_PERSONINCHARGE, can be joined with table worker
+  left_join(all_tabs$worker |> 
+              filter(Aktiv == 1) |> 
+              select(PK_Worker,
+                     person_in_charge=ShowName),
+            by=c("FK_PERSONINCHARGE"="PK_Worker")
+  )  |> 
+  
+  # get responsible and substitute (only active workers)
+  # in table projectpermission all projects are listed with a worker (for some reason: "benutzergruppe") and a role (responsible, substitute)
+  left_join(all_tabs$projectpermission |> 
+              # get active worker name from table "benutzergruppe"
+              left_join(all_tabs$benutzergruppe |>
+                          filter(Aktiv == 1) |> 
+                          select(PK_Benutzergruppe,
+                                   Name), 
+                        by=c("FK_BENUTZERGRUPPE" = "PK_Benutzergruppe")
+              ) |>  
+              # get role name coded in FK_PROJECTROLE
+              left_join(all_tabs$projectrole |> 
+                          select(PK_PROJECTROLE,
+                                 Role = Name),
+                        by=c("FK_PROJECTROLE"="PK_PROJECTROLE")) |> 
+              # select project, worker and role
+              select(FK_PROJECT,
+                     Name,
+                     Role) |> 
+              # only keep resp/subst (dismiss admin, staff)
+              # dismiss projects without resp/subst (otherwise 'NA' is added)
+              filter(Role == "Responsible" |
+                       Role == "Substitute",
+                     !is.na(Name)) |>  
+              group_by(FK_PROJECT, Role) |> 
+              summarise(Name = paste(Name, collapse = ","),.groups = "drop") |> 
+              pivot_wider(names_from = Role, values_from = Name),
+            by=c("PK_Project"="FK_PROJECT")) |> 
+  
+  # summarize all workers with time bookings (in case no active workers are responsible/substitute)
+  left_join(prepTime(all_tabs) |> 
+              select(top_project,FK_WORKER) |> 
+              left_join(all_tabs$worker |> 
+                          filter(Aktiv == 1) |> 
+                          select(PK_Worker,
+                                 workers_time_bookings=ShowName),
+                        by=c("FK_WORKER"="PK_Worker")
+              ) |> 
+              group_by(top_project) |> 
+              summarise(across(workers_time_bookings, ~ toString(unique(na.omit(unlist(strsplit(., ',')))))),
+                        across(everything(), first)),
+            by = c("PK_Project" = "top_project")) |> 
+
+
+  # get top-level projects of workpackages
+  # constructProjectParents generates  the top level projects for all wps
+  left_join(constructProjectParents(all_tabs$project) |> 
+              select(PK_Project, top_project),
+            by="PK_Project"
+  )  |> 
+  
+  # only keep projects with time bookings in last 400 days
+  # preptime gets all time bookings for all work packages
+  semi_join(prepTime(all_tabs) |>
+              filter(BookedDate > Sys.Date()-400) |>
+              distinct(top_project),
+            by="top_project") |> 
+  
+  # create link to master data
+  mutate(link = paste0("https://projectfacts.ctu.unibe.ch/app/project/ProjectDetailManager.do?action=dispatch&dispatch=1_2_ProjectDeMa&id=22.",PK_Project))  |> 
+  
+  # clean up
+  # dismiss columns that are not needed
+  select(CaseId, 
+         Name, 
+         Path,
+         top_project,
+         person_in_charge,
+         Responsible, Substitute,workers_time_bookings,
+         sites_nbr = cf_setup_number_of_sites,
+         sites_loc = cf_location,
+         main_ther = cf_main_therapeutic_area, # new Kim 03.04.2025
+         ct_gov_nbr = cf_clinicaltrials_gov_number,
+         study_ord = cf_applicable_ordinance_2,
+         study_cat = cf_study_category,
+         study_phase = cf_study_phase,
+         ethics_filed_yn = cf_lead_ethics_approval_filed,
+         ethics_nbr = cf_ethics_commitee_number,
+         fo_snf = cf_snf_rate_applies,
+         fund_snf = cf_snf,
+         snf_iict = cf_if_yes_iict_call,
+         fund_eu = cf_eu,
+         fund_charity_yn = cf_charity_non_profit,
+         fund_charity_spec = cf_if_yes_name,
+         fund_industry_yn = cf_industry,
+         fund_industry_spec = cf_if_yes_name_2,
+         fund_acad_yn = cf_academic,
+         fund_acad_spec = cf_if_yes_name_6,
+         fund_oth_yn = cf_other_funding,
+         fund_oth_spec = cf_if_yes_name_3,
+         swiss_ctu_yn = cf_swiss_ctu,
+         swiss_ctu_spec = cf_if_yes_name_4,
+         other_ctu_yn = cf_other_ctu_cro,
+         other_ctu_spec = cf_if_yes_name_5,
+         link
+  )  |> 
+  
+  # summarize all resps/subs from all work packages to project
+  group_by(top_project) |> 
+  summarise(across(c(Responsible, Substitute), ~ toString(unique(na.omit(unlist(strsplit(., ',')))))),
+            across(everything(), first))  |> 
+  select(CaseId:person_in_charge,
+         Responsible:workers_time_bookings,
+         sites_nbr:link) |> 
+  
+  # select projects
+  filter(
+    # only keep projects (dismiss consultings)
+    grepl("^P|FTE", CaseId), 
+    # remove ISPM/BIHAM graphics/support
+    !grepl("P-13(89|90)|1444", CaseId),
+    # # remove SCTO/SERI project
+    !grepl("P-0733", CaseId), 
+    # # remove test projects
+    !grepl("\\bTest\\b", Path,ignore.case = TRUE),
+  ) |> 
+  arrange(CaseId) |> 
+  
+  # create link to R-Drive:
+  mutate(folder = sapply(CaseId, function(x) {
+    ID <- as.character(as.numeric(gsub("[^0-9]", "", x))) # trim study ID as in R-drive
+    if (ID == "1") {  # two special cases with leading 0
+      ID <- "01"
+    } else if (ID == "861") {
+      ID <- "0861"
+    }
+    
+    idx <- which(grepl(paste0("^",ID,"_"),project_folders)) # search for project folder in list
+    
+    if (length(idx) > 0) { 
+      return(paste0(file.path("R:","Clinical studies",project_folders[idx]))) 
+    } else {
+      return("(No project folder found)") # if folder not found
+    }
+    
+  }),
+  folder = as.character(folder)
+  )
+
+
+### missings ----
+proj_miss <- projects |> 
+  filter(
+    # study details
+    is.na(sites_nbr) | 
+    (sites_nbr == "Multicenter" & is.na(sites_loc)) |
+    is.na(main_ther) | # new Kim 03.04.2025
+      
+    # ordinance, ethics
+    (is.na(study_ord)) |
+    (is.na(study_cat)) |
+    (grepl("ClinO", study_ord) & study_cat == "N/A") |
+    (study_ord == "If Clinical Trial Ordinance (ClinO)/Medical Device" & study_cat == "B") |
+    (study_ord == "If Clinical Trial Ordinance (ClinO)/Other health-related intervention" & study_cat == "C") |
+    (study_ord == "If Human Research Ordinance (HRO)/Observational study" & study_cat == "N/A") |
+    (study_ord == "If Human Research Ordinance (HRO)/Observational study" & study_cat == "C") |
+    (grepl("Further use|deceased|embryos",study_ord) & study_cat != "N/A") |
+    (grepl("HRA",study_ord) & study_cat != "N/A") |
+    (is.na(ethics_filed_yn)) |
+    (ethics_filed_yn == 'Yes' & is.na(ethics_nbr)) |
+      
+    # funding
+    (is.na(fund_snf)) |
+    (fund_snf == 'Yes' & is.na(snf_iict)) |
+    # (!grepl("FTE",CaseId) & fund_snf == 'Yes' & (is.na(fo_snf) | fo_snf == '0')) |
+    # (!grepl("FTE",CaseId) & (fund_snf == 'No' | fund_snf == "Unclear") & fo_snf == '1') |
+    (is.na(fund_eu)) |
+    (is.na(fund_charity_yn)) |
+    (fund_charity_yn == 'Yes' & is.na(fund_charity_spec)) |
+    (is.na(fund_industry_yn)) |
+    (fund_industry_yn == 'Yes' & is.na(fund_industry_spec)) |
+    (is.na(fund_acad_yn)) |
+    (fund_acad_yn == 'Yes' & is.na(fund_acad_spec)) |
+    (is.na(fund_oth_yn)) |
+    (fund_oth_yn == 'Yes' & is.na(fund_oth_spec)) |
+      
+    # collaboration
+    (is.na(swiss_ctu_yn)) |
+    (swiss_ctu_yn == 'Yes' & is.na(swiss_ctu_spec)) |
+    (is.na(other_ctu_yn)) |
+    (other_ctu_yn == 'Yes' & is.na(other_ctu_spec))
+  )
+
+### no active worker ----
+proj_no_active_worker <- proj_miss |> 
+  filter(is.na(person_in_charge),Responsible == "",Substitute == "",workers_time_bookings == "") |> 
+  select(CaseId,Name,person_in_charge:workers_time_bookings)
+if (nrow(proj_no_active_worker > 0)) {
+  write.csv(proj_no_active_worker, paste0("no_responsible_projects_",Sys.Date(),".csv"),row.names = FALSE)
+}
+
+```
+
+
+#### Tickets
+
+Do the same for tickets that we did for projects, get all the relevant tickets, 
+find all the missing data fields we would like filled.
+
+```{r warning=FALSE}
+
+tickets <- all_tabs$ticket |> 
+  
+  # get ticket channels and filter
+  # ticket channels are linked to the process items (current state is stored in FK_STATEITEM)
+  # the channel definition is found in the table ticketcategory
+  left_join(all_tabs$ticketprocessitem |> 
+              select(PK_TICKETPROCESSITEM,FK_TICKETCHANNEL) |> 
+              left_join(all_tabs$ticketcategory |> 
+                          select(PK_TICKETCATEGORY,
+                                 channel = Name),
+                        by = c("FK_TICKETCHANNEL" = "PK_TICKETCATEGORY")),
+            by=c("FK_STATEITEM" = "PK_TICKETPROCESSITEM"))  |> 
+  
+  filter(channel %in% c("6. CTU Tickets","2. DCR Tickets")) |> 
+  
+  # only keep tickets with time bookings in last 400 days
+  semi_join(all_tabs$activitydata |>
+              filter(BookedDate > Sys.Date()-400,
+                     !is.na(FK_TICKET)) |> 
+              distinct(FK_TICKET),
+            by=c("PK_TICKET" = "FK_TICKET"))  |> 
+  
+  # get create User (only active workers)
+  left_join(all_tabs$worker |> 
+              select(PK_Worker, Aktiv,
+                     creator = ShowName) |> 
+              # label inactive creators
+              mutate(creator = if_else(Aktiv == 0,
+                                     paste0(creator," (inact.)"),creator)) |> 
+              select(-Aktiv),
+            by=c("CreateUser" = "PK_Worker")) |> 
+  
+  # get organisation
+  left_join(all_tabs$customer |> 
+              select(PK_CUSTOMER,
+                     organisation = Name),
+            by=c("FK_CUSTOMER" = "PK_CUSTOMER")) |> 
+  
+  # get default project
+  left_join(all_tabs$project |> 
+              select(PK_Project,
+                     default_project = Name),
+            by=c("FK_PROJECT" = "PK_Project")) |> 
+  
+  # get owner
+  # the owner of a ticket is linked to the process items
+  # the current owner is the one linked with the process in FK_STATEITEM)
+  left_join(all_tabs$ticketprocessitem |> 
+              left_join(all_tabs$worker |> 
+                          select(PK_Worker, 
+                                 owner_current = ShowName,
+                                 Aktiv) |> 
+                          # label inactive owners
+                          mutate(owner_current = if_else(Aktiv == 0,
+                                                 paste0(owner_current," (inact.)"),owner_current)), 
+                        by=c("FK_OWNER" = "PK_Worker")) |> 
+              select(PK_TICKETPROCESSITEM,
+                     owner_current),
+            by=c("FK_STATEITEM" = "PK_TICKETPROCESSITEM")) |> 
+  
+  # get all previous owners (only active workers)
+  left_join(all_tabs$ticketprocessitem |>
+              left_join(all_tabs$worker |> 
+                          filter(Aktiv == "1") |> 
+                          select(PK_Worker, 
+                                 owner_all = ShowName
+                                 ), 
+                        by=c("FK_OWNER" = "PK_Worker")) |> 
+              select(FK_TICKET,
+                     owner_all) |> 
+              group_by(FK_TICKET) |> 
+              summarise(across(owner_all, ~ toString(unique(na.omit(unlist(strsplit(., ',')))))),
+                        across(everything(), first)),
+            by = c("PK_TICKET" = "FK_TICKET")) |> 
+  
+  # get all workers that changed the state of the ticket
+  left_join(all_tabs$ticketprocessitem |> 
+              left_join(all_tabs$worker |> 
+                          filter(Aktiv == "1",
+                                 ShowName != "SYSTEM") |> 
+                          select(PK_Worker,
+                                 workers_state_change = ShowName),
+                        by=c("CreateUser" = "PK_Worker")) |> 
+              select(FK_TICKET,workers_state_change) |> 
+              group_by(FK_TICKET) |> 
+              summarise(across(workers_state_change, ~ toString(unique(na.omit(unlist(strsplit(., ',')))))),
+                        across(everything(), first)),
+            by = c("PK_TICKET" = "FK_TICKET")) |> 
+  
+  # get all workers that booked time on the ticket
+  left_join(prepTime(all_tabs) |> 
+              left_join(all_tabs$worker |> 
+                          filter(Aktiv == "1") |> 
+                          select(PK_Worker,
+                                 workers_time_bookings = ShowName),
+                        by=c("FK_WORKER" = "PK_Worker")) |> 
+              select(FK_TICKET,workers_time_bookings) |> 
+              group_by(FK_TICKET) |> 
+              summarise(across(workers_time_bookings, ~ toString(unique(na.omit(unlist(strsplit(., ',')))))),
+                        across(everything(), first)),
+            by = c("PK_TICKET" = "FK_TICKET")) |> 
+    
+    # get current state of the ticket 
+    left_join(all_tabs$ticketprocessitem |> 
+                select(PK_TICKETPROCESSITEM,
+                       FK_TICKETSTATEDEFINITION) |> 
+                left_join(all_tabs$ticketstatedefinition |> 
+                            select(PK_TICKETSTATEDEFINITION,
+                                   current_state = NAME),
+                          by = c("FK_TICKETSTATEDEFINITION" = "PK_TICKETSTATEDEFINITION")),
+              by = c("FK_STATEITEM" = "PK_TICKETPROCESSITEM")) |> 
+    
+  # create link
+  mutate(link = paste0("https://projectfacts.ctu.unibe.ch/app/ticket/TicketDetailManager.do?action=dispatch&dispatch=1_1_TicketDeMa&id=67.",PK_TICKET)) |> 
+  
+  #clean up
+  select(channel,
+         ticket_number = TICKETID,
+         ticket_name = SUBJECT,
+         current_state,
+         creator,
+         owner_current,
+         owner_all,
+         workers_state_change,
+         workers_time_bookings,
+         organisation,
+         default_project,
+         simple_request = cf_client_question,
+         tick_ord = cf_applicable_ordinance,
+         tick_grant = cf_grant_application_or_submission_to_snf_eu_charity,
+         tick_iict = cf_snf_iict_call,
+         link
+  )
+
+
+### missings ----
+tick_miss <- tickets |> 
+  filter(is.na(simple_request) | simple_request == "0") |> 
+  filter((is.na(owner_current) & !grepl("closed|proceeding",current_state)) |
+           (is.na(organisation)) |
+           (is.na(default_project)) | 
+           (is.na(tick_grant)) |
+           (is.na(tick_iict))
+  ) |> 
+  arrange(ticket_number)
+
+### no active worker ----
+tick_no_active_worker <- tick_miss |> 
+  select(ticket_number:workers_time_bookings) |> 
+  filter(grepl("inact",creator),
+       is.na(owner_current) | grepl("inact",owner_current),
+       owner_all == "",
+       workers_state_change == "",
+       workers_time_bookings == ""
+       )
+
+if (nrow(tick_no_active_worker > 0)) {
+  write.csv(tick_no_active_worker, paste0("no_responsible_tickets_",Sys.Date(),".csv"),row.names = FALSE)
+}
+
+```
+
+
+#### Contacts
+
+And lastly, do the same for tickets that we did for projects, get all the relevant 
+tickets, find all the missing data fields we would like filled.
+
+```{r warning=FALSE}
+
+contacts <- all_tabs$crmkontakt |> 
+  
+  # get all active contacts, created in last 400 days
+  filter(Aktiv == 1,
+         ISPERSON == 1,
+         is.na(DeleteDate),
+         CreateDate > Sys.Date()-400
+  ) |> 
+  
+  # get create user
+  left_join(all_tabs$worker |> 
+              filter(Aktiv == 1) |> 
+              select(PK_Worker, 
+                     creator = ShowName),
+            by=c("CreateUser" = "PK_Worker")) |> 
+  
+  # get organisation
+  left_join(all_tabs$customer |> 
+              select(PK_CUSTOMER,
+                     organisation = Name,
+                     Path),
+            by=c("FK_CUSTOMER" = "PK_CUSTOMER")) |> 
+    
+  # create link
+  mutate(link = paste0("https://projectfacts.ctu.unibe.ch/app/crmkontakt/CRMKontaktDetailManager.do?action=dispatch&dispatch=1_2_CRMContactDeMa&id=39.",PK_CRMKONTAKT)) |> 
+  
+  # clean up 
+  select(Vorname,
+         Nachname,
+         organisation,
+         Path,
+         creator,
+         CreateDate,
+         link) |> 
+  arrange(Nachname)
+
+### missings ----
+cont_miss <- contacts |> 
+  filter(is.na(organisation) |
+           grepl("External",organisation) |
+           organisation == "Universität Bern" |
+           organisation == "Insel Gruppe AG" |
+           Path == "Universität Bern/Medizinische Fakultät" | 
+           Path == "Universität Bern/Philosophisch-historische Fakultät" | 
+           Path == "Universität Bern/Philosophisch-humanwissenschaftliche Fakultät" | 
+           Path == "Universität Bern/Philosophisch-naturwissenschaftliche Fakultät" | 
+           Path == "Universität Bern/Rechtswissenschaftliche Fakultät" |
+           Path == "Universität Bern/Theologische Fakultät" |
+           Path == "Universität Bern/Vetsuisse Fakultät" |
+           Path == "Universität Bern/Wirtschafts- und Sozialwissenschaftliche Fakultät"
+  )
+
+### no active worker ----
+cont_no_active_worker <- cont_miss |> 
+  filter(is.na(creator))
+
+if (nrow(cont_no_active_worker) > 0) { # I will correct this code for the location of the parentheses - I do not think it has become relevant at any recent point anyway, but just in case it creates any other errors down the line: "nrow(cont_no_active_worker > 0)"
+  write.csv(cont_no_active_worker, paste0("no_responsible_contacts_",Sys.Date(),".csv"),row.names = FALSE)
+}
+
+```
+
+
+## Send Emails
+
+Then the information is concatenated per worker in the department so that they 
+receive an automatic email reminding them to fill in the missing data pertinent to 
+their tickets and projects.
+
+Emails can only be sent from within the UniBe network; this excludes sending while on the VPN. 
+The pf data can also only be accessed from within the ISPM network.
+ 
+
+```{r warning=TRUE, eval=FALSE}
+
+library(sendmailR)
+
+
+workers <- all_tabs$worker |> 
+  filter(Aktiv == 1,
+         ShowName != "SYSTEM") |> 
+  select(ShowName,Contact)
+
+log_file <- paste0("pf_cleaning_log_",Sys.Date(),".txt")
+write.table(paste0(format(Sys.time(),  "%Y-%m-%d %H:%M:%S"),"\n\n"), log_file, quote = FALSE, row.names = FALSE, col.names = FALSE, append = FALSE)
+
+evaS_ID <- which(workers$ShowName == "Eva Segelov")
+
+
+# Clean encoding of all character columns in relevant data frames
+clean_utf8 <- function(df) {
+  df[] <- lapply(df, function(col) {
+    if (is.character(col)) {
+      iconv(col, from = "", to = "UTF-8", sub = "byte")
+    } else {
+      col
+    }
+  })
+  df
+}
+
+proj_miss <- clean_utf8(proj_miss)
+tick_miss <- clean_utf8(tick_miss)
+cont_miss <- clean_utf8(cont_miss)
+workers$ShowName <- iconv(workers$ShowName, from = "", to = "UTF-8", sub = "byte")
+
+
+
+
+for (w in seq_along(workers$ShowName)) {
+  if(w == evaS_ID){next} # because Eva Segelov requested not to receive these emails, skip the loop for her name
+  
+  worker = workers$ShowName[w]
+  email = workers$Contact[w]
+  
+  
+  ### projects ----
+  proj_miss_worker <- proj_miss |>
+    filter(
+      # worker is responsible or substitute for any work package
+      stri_detect_fixed(Responsible, worker) | stri_detect_fixed(Substitute, worker) |
+        # worker is person in charge of the project if no active worker is responsible/substitute for any work package
+        Responsible == "" & Substitute == "" & stri_detect_fixed(person_in_charge, worker) |
+        # worker booked time on the project if no active worker is responsible/substitute/PIC 
+        Responsible == "" & Substitute == "" & is.na(person_in_charge) & stri_detect_fixed(workers_time_bookings, worker)
+    )
+
+    
+  ### tickets ----
+  tick_miss_worker <- tick_miss |> 
+    filter(
+      # worker is current owner of the ticket
+      owner_current == worker |
+        # if no active worker is current owner, worker is a previous owner of the ticket
+        ((is.na(owner_current) | stri_detect_fixed(owner_current, "inact")) & stri_detect_fixed(owner_all, worker)) |
+        # if no active worker is current or previous owner, worker changed the state of the ticket
+        ((is.na(owner_current) | stri_detect_fixed(owner_current, "inact")) & owner_all == "" & stri_detect_fixed(workers_state_change, worker)) |
+        # if no active worker is current/previous owner or changed the state of the ticket, worker booked time on the ticket
+        ((is.na(owner_current) | stri_detect_fixed(owner_current, "inact")) & owner_all == "" & workers_state_change == "" & stri_detect_fixed(workers_time_bookings, worker)) |
+        # if no active worker is current/previous owner, changed the state or booked time of/on the ticket, worker is creator of the ticket
+        ((is.na(owner_current) | stri_detect_fixed(owner_current, "inact")) & owner_all == "" & workers_state_change == "" & workers_time_bookings == "" & creator == worker)
+             )
+   
+  ### contacts ----
+  cont_miss_worker <- cont_miss |> 
+    filter(creator == worker)
+  
+  write.table(paste0(worker,"\nProjects: ", nrow(proj_miss_worker),"\nTickets: ", nrow(tick_miss_worker),"\nContacts: ", nrow(cont_miss_worker),"\n\n"), log_file, quote = FALSE, row.names = FALSE, col.names = FALSE, append = TRUE)
+  
+   
+  ## problems ----
+  
+  ### projects ----
+  if (nrow(proj_miss_worker) > 0) {
+    
+    proj_problems <- proj_miss_worker |> 
+      mutate(
+        problem_no_pic = case_when(Responsible == "" & Substitute == "" & is.na(person_in_charge) ~
+                                     "No active worker is in charge of the project or responsible/substitute of any work package."),
+        # Sites
+        problem_site_na = case_when(is.na(sites_nbr) ~ 
+                               "Field 'Setup/number of sites' (Study Details) is empty"),
+        problem_loc_na = case_when(sites_nbr == "Multicenter" & is.na(sites_loc) ~
+                               "Field 'Location' (Study Details) is empty"),
+        # Therapeutic area  # new Kim 03.04.2025
+        problem_site_na = case_when(is.na(main_ther) ~ 
+                                "Field 'Main Therapeutic Area' (Study Details) is empty"),
+        
+        # Ordinance
+        problem_ord_na = case_when(is.na(study_ord) ~
+                               "Field 'Applicable Ordinance' (Ordinance, Ethic & Swissmedic) is empty"),
+        problem_cat_na = case_when(is.na(study_cat) ~
+                               "Field 'Study Category' (Ordinance, Ethic & Swissmedic) is empty"),
+        problem_clino_na = case_when(grepl("ClinO", study_ord) & study_cat == "N/A" ~
+                               "Study category (Ordinance, Ethic & Swissmedic) can't be N/A if ordinance is ClinO"),
+        problem_md_b = case_when(study_ord == "If Clinical Trial Ordinance (ClinO)/Medical Device" & study_cat == "B" ~
+                               "Study category (Ordinance, Ethic & Swissmedic) can't be B if ordinance is ClinO MD"),
+        problem_clino_other_c = case_when(study_ord == "If Clinical Trial Ordinance (ClinO)/Other health-related intervention" & study_cat == "C" ~
+                               "Study category (Ordinance, Ethic & Swissmedic) can't be C if ordinance is ClinO Other"),
+        problem_hro_obs_na = case_when(study_ord == "If Human Research Ordinance (HRO)/Observational study" & study_cat == "N/A" ~
+                               "Study category (Ordinance, Ethic & Swissmedic) can't be N/A if ordinance is HRO Observational"),
+        problem_hro_obs_c = case_when(study_ord == "If Human Research Ordinance (HRO)/Observational study" & study_cat == "C" ~
+                               "Study category (Ordinance, Ethic & Swissmedic) can't be C if ordinance is HRO Observational"),
+        problem_hro_notna = case_when(grepl("Further use|deceased|embryos",study_ord) & study_cat != "N/A" ~
+                                "Study category (Ordinance, Ethic & Swissmedic) must be N/A if ordinance is any HRO besides observational"),
+        problem_nonhra_notna = case_when(grepl("HRA",study_ord) & study_cat != "N/A" ~
+                                "Study category (Ordinance, Ethic & Swissmedic) must be N/A if ordinance is Non-HRA"),
+        # ethics
+        problem_ethics_na = case_when(is.na(ethics_filed_yn) ~
+                                "Field 'Lead ethics approval filed' (Ordinance, Ethic & Swissmedic) is empty"),
+        problem_ethicsnbr_na = case_when(ethics_filed_yn == 'Yes' & is.na(ethics_nbr) ~
+                                "Ethics approval is filed but field 'Ethics Commitee Number' (Ordinance, Ethic & Swissmedic) is empty"),
+        #funding
+        problem_snf_na = case_when(is.na(fund_snf) ~
+                                "Field 'SNF' (Funding) is empty"),
+        problem_iict_na = case_when(fund_snf == 'Yes' & is.na(snf_iict) ~
+                                "Field 'SNF' (Funding) is yes but 'IICT call' is empty"),
+        # problem_snf_no_fo_yes = case_when((!grepl("FTE",CaseId) & fund_snf == 'Yes' & (is.na(fo_snf) | fo_snf == '0')) ~
+        #                         "Field 'SNF' (Funding) is yes but 'SNF rate applies' (Financial Office) is not ticked. Please verify whether the project is really funded by the SNF."),
+        # problem_snf_yes_fo_no = case_when((!grepl("FTE",CaseId) & (fund_snf == 'No' | fund_snf == "Unclear") & fo_snf == '1') ~
+        #                         "Field 'SNF' (Funding) is no/unclear but 'SNF rate applies' (Financial Office) is ticked. Please verify whether the project is really funded by the SNF."),
+        problem_eu_na = case_when(is.na(fund_eu) ~
+                                "Field 'EU' (Funding) is empty"),
+        problem_char_na = case_when(is.na(fund_charity_yn) ~
+                                "Field 'Charity / Non-profit' (Funding) is empty"),
+        problem_char_spec = case_when(fund_charity_yn == 'Yes' & is.na(fund_charity_spec) ~
+                                "Field 'Charity' (Funding) is yes but not specified"),
+        problem_ind_na = case_when(is.na(fund_industry_yn) ~
+                                "Field 'Industry' (Funding) is empty"),
+        problem_ind_spec = case_when(fund_industry_yn == 'Yes' & is.na(fund_industry_spec) ~
+                                "Field 'Industry' (Funding) is yes but not specified"),
+        problem_acad_na = case_when(is.na(fund_acad_yn) ~
+                                "Field 'Academic' (Funding) is empty"),
+        problem_acad_spec = case_when(fund_acad_yn == 'Yes' & is.na(fund_acad_spec) ~
+                                "Field 'Academic' (Funding) is yes but not specified"),
+        problem_othfund_na = case_when(is.na(fund_oth_yn) ~
+                                "Field 'Other funding' (Funding) is empty"),
+        problem_othfund_spec = case_when(fund_oth_yn == 'Yes' & is.na(fund_oth_spec) ~
+                                "Field 'Other funding' (Funding) is yes but not specified"),
+        # other CTU
+        problem_swissctu_na = case_when(is.na(swiss_ctu_yn) ~
+                                "Field 'Swiss CTU' (Collaboration) is empty"),
+        problem_swissctu_spec = case_when(swiss_ctu_yn == 'Yes' & is.na(swiss_ctu_spec) ~
+                                "Field 'Swiss CTU' (Collaboration) is yes but not specified"),
+        problem_othctu_na = case_when(is.na(other_ctu_yn) ~
+                                "Field 'Other CTU/CRO' (Collaboration) is empty"),
+        problem_othctu_spec = case_when(other_ctu_yn == 'Yes' & is.na(other_ctu_spec) ~
+                                "Field 'Other CTU/CRO' (Collaboration) is yes but not specified")
+      )  |> 
+      unite(problems,starts_with("problem"), na.rm = TRUE, sep = "<br> - ") |> 
+      unite(project,c(CaseId,Name),sep = ": ") |> 
+      mutate(project_link = paste0("<a href = ",URLencode(link),">",project,"</a>")) |> 
+      unite(all,c(project_link,problems), sep = "<br> - ") |> 
+      mutate(folder_link = paste0("Link to R-Drive: <a href = ",URLencode(folder),">",folder,"</a>")) |> 
+      unite(all,c(all,folder_link), sep = "<br>") |> 
+      pull(all)
+    
+    proj_txt <- "
+    <html>
+    <body>
+    <h2>PROJECTS</h2>
+    <p>
+    The project list takes into account all projects with time bookings in the last 400 days in which:
+    </p>
+    <ul>
+    <li>you are registered as responsible or substitute in any of the work packages.</li>
+    <li>you are registered as person in charge of the project (if no active workers are set as responsible or substitute in any work package).</li>
+    <li>you booked time on the project (if no active workers are set as responsible, substitute, or person in charge).</li>
+    </ul>
+    <p>
+    If you are not involved in the project (anymore), feel free to update Projectfacts accordingly.
+    </p>
+    <p>
+    You can click on the link to be forwarded to the respective master data of the project or to the respective folder on the R-drive where you should find all the necessary info in the protocol.
+    </p>
+    <p>
+    Please go through the list and add or correct the information. Be aware that each item is sent to everybody involved in the project, so if you're lucky, someone else has already completed the info.
+    </p>
+    </body>
+    </html>
+    "
+    proj_txt <- paste0(proj_txt,paste0(proj_problems,collapse="<br><br>"),"<br><br><br><br><br>")
+    
+  } else{
+    proj_txt <- ""
+  }
+  
+  
+  ### tickets ----
+  if (nrow(tick_miss_worker) > 0) {
+    
+    tick_problems <- tick_miss_worker |> 
+      mutate(
+        problem_owner = case_when(is.na(owner_current) ~
+                               "No current owner selected on the ticket. Please select an owner by adding a 'new item'."),
+        problem_orga = case_when(is.na(organisation) ~
+                               "No organisation (Assignements of the ticket) selected on the ticket. Please select the same organisation as for the main contact."),
+        problem_proj = case_when(is.na(default_project) ~
+                               "No project (Assignements of the ticket) selected on the ticket. Please select the default project of the organisation."),
+        problem_grant = case_when(is.na(tick_grant) ~
+                               "Field 'Grant application or submission to SNF/EU/charity' (Other) is empty."),
+        problem_iict = case_when(is.na(tick_iict) ~
+                               "Field 'SNF IICT call' (Other) is empty.")
+      ) |> 
+      unite(problems,starts_with("problem"), na.rm = TRUE, sep = "<br> - ") |>
+      unite(ticket,c(ticket_number,ticket_name),sep= ": ") |> 
+      mutate(ticket_link = paste0("<a href = ",URLencode(link),">",ticket,"</a>")) |> 
+      unite(all,c(ticket_link,problems), sep="<br> - ") |> 
+      pull(all)
+    
+    tick_txt <- "
+    <html>
+    <body>
+    <h2> TICKETS </h2>
+    <p>
+    The ticket list takes into account all tickets which have been created in the last 400 days where:
+    </p>
+    <ul>
+    <li>you are specified as current owner.</li>
+    <li>you are a previous owner (if no active worker is set as current owner).</li>
+    <li>you previously added an item to the ticket (if no active workers are set as current or previous owners).</li>
+    <li>you booked time on the ticket (if no active workers are set as current or previous owners or added items to the ticket).</li>
+    <li>you are the creator of the ticket (if none of the above applies).</li>
+  </ul>
+  <p>
+    If you feel like this information should be completed by someone else, make sure to add a new item, change the owner of the ticket, and send an email to the respective person.
+  </p>
+  <p>
+    If you feel like this ticket should not be included in any reporting (e.g., it is a simple client question), make sure to tick the checkbox 'Client question' in the ticket master data.
+  </p>
+  <p>
+    You can click on the link to be forwarded to the respective master data of the ticket.
+  </p>
+</body>
+</html>
+"
+    tick_txt <- paste0(tick_txt,paste0(tick_problems, collapse="<br><br>"),"<br><br><br><br><br>")
+    
+  } else {
+    tick_txt <- ""
+  }
+  
+  
+  
+  ### contacts ----
+  if (nrow(cont_miss_worker) > 0) {
+    cont_problems <- cont_miss_worker |> 
+      mutate(
+        problem_orga_na = case_when(is.na(organisation) ~
+                               "No organisation selected for the contact."),
+        problem_ext = case_when(grepl("External",organisation) ~
+                               "Organisation should not be 'External For/Non-Profit'. Please choose a specific organisation!"),
+        problem_ub = case_when(organisation == "Universität Bern" ~
+                               "Organisation should not be 'Universität Bern'. Please specify the institute!"),
+        problem_insel = case_when(organisation == "Insel Gruppe AG" ~
+                               "Organisation should not be 'Insel Gruppe AG'. Please specify the clinic!"),
+        problem_mf = case_when(Path == "Universität Bern/Medizinische Fakultät" ~
+                               "Organisation should not be 'Medizinische Fakultät'. Please specify the institute!"),
+        problem_phistf = case_when(Path == "Universität Bern/Philosophisch-historische Fakultät" ~
+                               "Organisation should not be 'Philosophisch-historische Fakultät'. Please specify the institute!"),
+        problem_phumanf = case_when(Path == "Universität Bern/Philosophisch-humanwissenschaftliche Fakultät" ~
+                               "Organisation should not be 'Philosophisch-humanwissenschaftliche Fakultät'. Please specify the institute!"),
+        problem_phnatf = case_when(Path == "Universität Bern/Philosophisch-naturwissenschaftliche Fakultät" ~
+                               "Organisation should not be 'Philosophisch-naturwissenschaftliche Fakultät'. Please specify the institute!"),
+        problem_rf = case_when(Path == "Universität Bern/Rechtswissenschaftliche Fakultät" ~
+                               "Organisation should not be 'Rechtswissenschaftliche Fakultät'. Please specify the institute!"),
+        problem_tf = case_when(Path == "Universität Bern/Theologische Fakultät" ~
+                               "Organisation should not be 'Theologische Fakultät'. Please specify the institute!"),
+        problem_vf = case_when(Path == "Universität Bern/Vetsuisse Fakultät" ~
+                               "Organisation should not be 'Vetsuisse Fakultät'. Please specify the institute!"),
+        problem_wsf = case_when(Path == "Universität Bern/Wirtschafts- und Sozialwissenschaftliche Fakultät" ~
+                                "Organisation should not be 'Wirtschafts- und Sozialwissenschaftliche Fakultät'. Please specify the institute!")
+      )  |> 
+      unite(problems,starts_with("problem"), na.rm = TRUE, sep = "<br> - ") |>
+      unite(contact,c(Vorname, Nachname),sep= " ") |> 
+      mutate(contact_link = paste0("<a href = ",URLencode(link),">",contact,"</a>")) |> 
+      unite(all,c(contact_link,problems), sep="<br> - ") |> 
+      pull(all)
+    
+    cont_txt <- "
+    <html>
+    <body>
+    <h2>CONTACTS</h2>
+    <p>
+    The contact list takes into account all contacts which you have created in the last 400 days with no or not a specific enough organisation.
+    </p>
+    <p>
+    Please note that it is very important that each contact in Projectfacts is linked to a specific organisation. Please refer to our Projectfacts-SOP (CS_GEN_INS-01), and choose an appropriate organisation or ask our admin team (Madeleine or Lotte) to create a new organisation!
+    </p>
+    <p>
+    You can click on the link to be forwarded to the respective contact.
+    </p>
+    </body>
+    </html>
+    "
+    cont_txt <- paste0(cont_txt,paste0(cont_problems, collapse ="<br><br>"),"<br><br><br>")
+    
+  } else {
+    cont_txt <- ""
+  }
+  
+  signature <- "
+  <html>
+  <body>
+  <p>
+  We are aware that your list might be very long and this task is not the most enjoyable one. However, it is important that we have this information in order to create more accurate reports about our work.
+  </p>
+  <p>
+  You will be reminded on a regular basis.
+  </p>
+  <p>
+  Best regards,
+  </p>
+  <p>
+  Alan Haynes, Dominik Güntensperger, & Kimberly Gilbert
+  </p>
+  </body>
+  </html>"
+
+  ## mail text ----
+  if (nrow(proj_miss_worker) > 0 | nrow(tick_miss_worker) > 0 | nrow(cont_miss_worker) > 0) {
+    
+    mail_txt <- paste0("Dear ",worker,"<br><br>This is an automatically generated email asking you to complete your Projectfacts information.<br>It is very important that this information is as complete and correct as possible.<br><br>Below you find a personalized list of your projects, tickets and/or contacts that have missing and/or inconsistent information. Please go through the list and add/correct the information.<br>All lists have been generated automatically. Please let us know if you notice any mistakes!<br>Please note that you can always choose the option 'unknown' or simply type 'unknown' in a text field if it's not possible for you to retrieve the information!<br><br><br><br>",
+                       proj_txt,
+                       tick_txt,
+                       cont_txt,
+                       signature)
+    
+    mail <- list(mime_part(mail_txt,
+                           type = "text/html",
+                           disposition="inline")
+    )
+    
+    sendmail(from = #"kimberly.gilbert2@unibe.ch", # fill in the email address
+             ##cc = "dominik.guentensperger@unibe.ch",
+             to = email,
+             subject = "Projectfacts Reminder",
+             msg = mail,
+             control = list(smtpServer = "smtp.unibe.ch",
+                            smtpPort = 25,
+                            verbose = TRUE)
+    )
+  }
+}
+
+```
+
