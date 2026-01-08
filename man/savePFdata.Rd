@@ -4,7 +4,11 @@
 \alias{savePFdata}
 \title{save projectfacts data to R drive}
 \usage{
-savePFdata(all_tabs, dir = "R:/Projectfacts/ODBC", dated = FALSE)
+savePFdata(
+  all_tabs,
+  dir = "R:/01_Operations/09_Project Management/Projectfacts/ODBC",
+  dated = FALSE
+)
 }
 \arguments{
 \item{all_tabs}{data from e.g. ODBC}

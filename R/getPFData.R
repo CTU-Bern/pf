@@ -47,7 +47,7 @@
 #' # Load from ODBC (requires DNS to be configured)
 #' # all_tabs <- getPFData(NULL)
 #' # all_tabs <- getPFData(NULL, all = TRUE)
-getPFData <- function(file = "R:/Projectfacts/ODBC/pf_tabs.rds", ...){
+getPFData <- function(file = "R:/01_Operations/09_Project Management/Projectfacts/ODBC/pf_tabs.rds", ...){
   
   if(is.null(file)){
     
