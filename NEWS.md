@@ -1,3 +1,7 @@
+# pf 0.2.3
+
+* update paths on r-folder structure again
+
 # pf 0.2.2
 
 * update paths on r-folder structure

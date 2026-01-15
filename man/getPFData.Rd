@@ -5,7 +5,7 @@
 \title{Load projectfacts data either from file or ODBC}
 \usage{
 getPFData(
-  file = "R:/01_Operations/09_Project Management/Projectfacts/ODBC/pf_tabs.rds",
+  file = "R:/01_Operations/09_Project_Management/Projectfacts/ODBC/pf_tabs.rds",
   ...
 )
 }
